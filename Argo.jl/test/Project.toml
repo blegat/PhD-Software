@@ -1,8 +1,11 @@
 [deps]
 Argo = "e00da184-d7e2-53e1-b9b4-77df80479b38"
+JSOSolvers = "10dff2fc-5484-5881-a0e0-c90441020f8a"
 JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+NLPModelsJuMP = "792afdf1-32c1-5681-94e0-d7bf7a5df49e"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 Argo = {path = ".."}
+JSOSolvers = {path = "/tmp/claude-1000/-home-blegat-git-Students-Sofiane-Tanji-PhD-Software-Argo-jl/86d0ac57-7352-44d9-a151-872bbd164eed/scratchpad/JSOSolvers"}

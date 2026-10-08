@@ -10,15 +10,21 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [weakdeps]
+JSOSolvers = "10dff2fc-5484-5881-a0e0-c90441020f8a"
 JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+NLPModelsJuMP = "792afdf1-32c1-5681-94e0-d7bf7a5df49e"
 
 [extensions]
+ArgoJSOSolversExt = "JSOSolvers"
 ArgoJuMPExt = ["JuMP", "MathOptInterface"]
 ArgoMathOptInterfaceExt = "MathOptInterface"
+ArgoNLPModelsJuMPExt = "NLPModelsJuMP"
 
 [compat]
 julia = "1.10"
+JSOSolvers = "0.14"
 JuMP = "1.15"
 MathOptInterface = "1.19"
+NLPModelsJuMP = "0.13"
 PrecompileTools = "1"

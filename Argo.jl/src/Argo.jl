@@ -28,9 +28,11 @@ include("hybrid.jl")
 include("sampling.jl")
 include("parameter_optimization.jl")
 include("regime_analysis.jl")
+include("autotune.jl")
 include("precompile_workload.jl")
 
-export Certificate,
+export AutoTune,
+    Certificate,
     ApplicabilityRequest,
     ComparisonContext,
     FixedBudgetRequest,
@@ -44,6 +46,7 @@ export Certificate,
     RankingRequest,
     ScalarExpr,
     ScalarSymbol,
+    MethodImplementation,
     Term,
     Variable
 
@@ -53,6 +56,7 @@ export certificate_bound,
     evaluate_scalar,
     get_oracle,
     get_property,
+    implemented_methods,
     has_oracle,
     has_property,
     iterations_to_accuracy,

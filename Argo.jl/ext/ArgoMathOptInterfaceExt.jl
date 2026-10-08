@@ -317,4 +317,220 @@ function Argo.minimize(model::MOI.ModelLike; name::Symbol=:x)
     return Argo.minimize(objective)
 end
 
+# AutoTune meta-optimizer
+
+mutable struct AutoTuneOptimizer <: MOI.AbstractOptimizer
+    optimizer_constructor::Any
+    accuracy::Float64
+    initial_bounds::Dict{Symbol,Float64}
+    oracle_costs::Dict
+    options::Dict{MOI.AbstractOptimizerAttribute,Any}
+    # Only used to answer `supports` queries before `copy_to`.
+    probe::Union{Nothing,MOI.ModelLike}
+    inner::Union{Nothing,MOI.ModelLike}
+    plan::Any
+end
+
+function _default_initial_bounds()
+    return Dict(q => 1.0 for q in Argo._KNOWN_INITIAL_BOUNDS if q !== :none)
+end
+
+function AutoTuneOptimizer(
+    optimizer_constructor;
+    accuracy::Real=1e-6,
+    initial_bounds=_default_initial_bounds(),
+    oracle_costs=Dict(),
+)
+    return AutoTuneOptimizer(
+        optimizer_constructor,
+        accuracy,
+        Dict{Symbol,Float64}(initial_bounds),
+        oracle_costs,
+        Dict{MOI.AbstractOptimizerAttribute,Any}(),
+        nothing,
+        nothing,
+        nothing,
+    )
+end
+
+function Argo.AutoTune(optimizer_constructor; kwargs...)
+    return () -> AutoTuneOptimizer(optimizer_constructor; kwargs...)
+end
+
+function _probe(model::AutoTuneOptimizer)
+    if model.probe === nothing
+        model.probe = MOI.instantiate(model.optimizer_constructor)
+    end
+    return model.probe
+end
+
+MOI.is_empty(model::AutoTuneOptimizer) = model.inner === nothing
+
+function MOI.empty!(model::AutoTuneOptimizer)
+    model.inner = nothing
+    model.plan = nothing
+    return
+end
+
+MOI.supports_incremental_interface(::AutoTuneOptimizer) = false
+
+function MOI.supports_constraint(
+    model::AutoTuneOptimizer,
+    F::Type{<:MOI.AbstractFunction},
+    S::Type{<:MOI.AbstractSet},
+)
+    return MOI.supports_constraint(_probe(model), F, S)
+end
+
+function MOI.supports(
+    model::AutoTuneOptimizer,
+    attr::Union{MOI.ObjectiveSense,MOI.ObjectiveFunction},
+)
+    return MOI.supports(_probe(model), attr)
+end
+
+function MOI.supports(
+    model::AutoTuneOptimizer,
+    attr::MOI.VariablePrimalStart,
+    ::Type{MOI.VariableIndex},
+)
+    return MOI.supports(_probe(model), attr, MOI.VariableIndex)
+end
+
+const _PLAN = MOI.RawOptimizerAttribute("Argo.plan")
+
+MOI.supports(::AutoTuneOptimizer, ::MOI.RawOptimizerAttribute) = true
+function MOI.supports(model::AutoTuneOptimizer, ::MOI.Silent)
+    return MOI.supports(_probe(model), MOI.Silent())
+end
+
+function MOI.set(
+    model::AutoTuneOptimizer,
+    attr::Union{MOI.RawOptimizerAttribute,MOI.Silent},
+    value,
+)
+    attr == _PLAN && throw(MOI.SetAttributeNotAllowed(attr))
+    model.options[attr] = value
+    return
+end
+
+function MOI.get(model::AutoTuneOptimizer, attr::MOI.RawOptimizerAttribute)
+    attr == _PLAN && return model.plan
+    haskey(model.options, attr) && return model.options[attr]
+    return MOI.get(something(model.inner, _probe(model)), attr)
+end
+
+MOI.get(model::AutoTuneOptimizer, ::MOI.Silent) = get(model.options, MOI.Silent(), false)
+
+function MOI.get(model::AutoTuneOptimizer, ::MOI.SolverName)
+    return "Argo.AutoTune(" * MOI.get(_probe(model), MOI.SolverName()) * ")"
+end
+
+"""
+The method parameters of `certificate` as numbers, or `nothing` if one of them
+is symbolic or changes with the iteration (e.g., a momentum schedule).
+"""
+function _numeric_parameters(certificate, initial_bounds)
+    parameters = Dict{Symbol,Float64}()
+    for name in certificate.plan.method.required_parameters
+        values = map((1, 2)) do k
+            value = Argo.parameter_value(certificate, name; k, initial_bounds)
+            value isa Real ? value : Argo.try_evaluate_scalar(value)
+        end
+        any(isnothing, values) && return nothing
+        values[1] == values[2] || return nothing
+        parameters[name] = values[1]
+    end
+    return parameters
+end
+
+function _select_plan(model::AutoTuneOptimizer, src::MOI.ModelLike, inner)
+    implementations = Argo.implemented_methods(inner)
+    isempty(implementations) && return nothing
+    problem = try
+        Argo.minimize(src)
+    catch err
+        # The model is outside what Argo can analyze: keep the solver defaults.
+        err isa ArgumentError || rethrow()
+        return nothing
+    end
+    methods = Set(impl.method for impl in implementations)
+    # A reformulation would change the problem given to the solver, so only
+    # certificates for the formulation as written can be configured.
+    candidates = filter(Argo.certificates(problem)) do certificate
+        return isempty(certificate.reformulation_steps) &&
+               certificate.plan.method.id in methods
+    end
+    ranked = Argo.rank(
+        candidates;
+        accuracy=model.accuracy,
+        initial_bounds=model.initial_bounds,
+        oracle_costs=model.oracle_costs,
+    )
+    for assessment in ranked
+        certificate = only(assessment.phases).certificate
+        parameters = _numeric_parameters(certificate, model.initial_bounds)
+        parameters === nothing && continue
+        implementation = first(
+            impl for impl in implementations if impl.method === certificate.plan.method.id
+        )
+        return (; assessment, certificate, implementation, parameters)
+    end
+    return nothing
+end
+
+function MOI.copy_to(model::AutoTuneOptimizer, src::MOI.ModelLike)
+    inner = MOI.instantiate(model.optimizer_constructor)
+    for (attr, value) in model.options
+        MOI.set(inner, attr, value)
+    end
+    model.plan = _select_plan(model, src, inner)
+    if model.plan !== nothing
+        model.plan.implementation.configure!(inner, model.plan.parameters)
+    end
+    index_map = MOI.copy_to(inner, src)
+    model.inner = inner
+    return index_map
+end
+
+MOI.optimize!(model::AutoTuneOptimizer) = MOI.optimize!(model.inner)
+
+const _FORWARDED_MODEL_ATTRIBUTES = Union{
+    MOI.TerminationStatus,
+    MOI.PrimalStatus,
+    MOI.DualStatus,
+    MOI.ResultCount,
+    MOI.RawStatusString,
+    MOI.ObjectiveValue,
+    MOI.DualObjectiveValue,
+    MOI.ObjectiveBound,
+    MOI.SolveTimeSec,
+    MOI.BarrierIterations,
+}
+
+function MOI.get(model::AutoTuneOptimizer, attr::_FORWARDED_MODEL_ATTRIBUTES)
+    if model.inner === nothing
+        attr isa MOI.TerminationStatus && return MOI.OPTIMIZE_NOT_CALLED
+        attr isa MOI.ResultCount && return 0
+        attr isa Union{MOI.PrimalStatus,MOI.DualStatus} && return MOI.NO_SOLUTION
+    end
+    return MOI.get(model.inner, attr)
+end
+
+function MOI.get(
+    model::AutoTuneOptimizer,
+    attr::MOI.VariablePrimal,
+    vi::MOI.VariableIndex,
+)
+    return MOI.get(model.inner, attr, vi)
+end
+
+function MOI.get(
+    model::AutoTuneOptimizer,
+    attr::Union{MOI.ConstraintDual,MOI.ConstraintPrimal},
+    ci::MOI.ConstraintIndex,
+)
+    return MOI.get(model.inner, attr, ci)
+end
+
 end
