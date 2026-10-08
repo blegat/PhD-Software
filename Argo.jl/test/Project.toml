@@ -1,0 +1,8 @@
+[deps]
+Argo = "e00da184-d7e2-53e1-b9b4-77df80479b38"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+Argo = {path = ".."}
